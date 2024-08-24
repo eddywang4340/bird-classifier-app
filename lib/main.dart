@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:path/path.dart' show join;
-import 'dart:io';
+import 'dart:typed_data';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -43,6 +41,7 @@ class MyHomePage extends StatefulWidget {
 class _MyHomePageState extends State<MyHomePage> {
   late CameraController _controller;
   late Future<void> _initializeControllerFuture;
+  Uint8List? _imageBytes;
 
   @override
   void initState() {
@@ -64,30 +63,31 @@ class _MyHomePageState extends State<MyHomePage> {
     try {
       await _initializeControllerFuture;
 
-      // Construct the path where the image should be saved using path_provider.
-      final directory = await getApplicationDocumentsDirectory();
-      final path = join(
-        directory.path,
-        '${DateTime.now()}.png',
-      );
-
-      // Take the picture and save it to the path.
+      // Take the picture and get the image as bytes
       final image = await _controller.takePicture();
+      final bytes = await image.readAsBytes();
+      print("Image captured");
 
-      // Save the image to the specified path
-      final file = File(path);
-      await file.writeAsBytes(await image.readAsBytes());
+      setState(() {
+        _imageBytes = bytes;
+      });
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Picture saved to $path')),
+        SnackBar(content: Text('Picture captured')),
       );
     } catch (e) {
-      print(e);
+      print("Error taking picture: $e");
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    // Get the screen size
+    final screenSize = MediaQuery.of(context).size;
+
+    // Set the camera preview height to 50% of the screen height
+    final cameraHeight = screenSize.height * 0.5;
+
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
@@ -99,17 +99,35 @@ class _MyHomePageState extends State<MyHomePage> {
           future: _initializeControllerFuture,
           builder: (context, snapshot) {
             if (snapshot.connectionState == ConnectionState.done) {
-              return CameraPreview(_controller);
+              return Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.all(16.0), // Add padding here
+                    child: SizedBox(
+                      height: cameraHeight, // Set scalable height here
+                      width: screenSize.width, // Set width to full screen width
+                      child: _imageBytes == null
+                          ? CameraPreview(_controller)
+                          : Image.memory(_imageBytes!),
+                    ),
+                  ),
+                  const SizedBox(height: 16.0), // Add space between camera and button
+                  Align(
+                    alignment: Alignment.center,
+                    child: FloatingActionButton(
+                      onPressed: _takePicture,
+                      tooltip: 'Take Picture',
+                      child: const Icon(Icons.camera),
+                    ),
+                  ),
+                ],
+              );
             } else {
               return const Center(child: CircularProgressIndicator());
             }
           },
         ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _takePicture,
-        tooltip: 'Take Picture',
-        child: const Icon(Icons.camera),
       ),
     );
   }
