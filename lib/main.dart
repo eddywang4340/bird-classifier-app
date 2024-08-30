@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'dart:typed_data';
-import 'package:flutter_tflite/flutter_tflite.dart';  // Import flutter_tflite
-import 'dart:convert';  // For base64 encoding
+import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:image/image.dart' as img;
 
 void main() async {
@@ -16,7 +15,7 @@ void main() async {
 class MyApp extends StatelessWidget {
   final CameraDescription camera;
 
-  const MyApp({Key? key, required this.camera}) : super(key: key);
+  const MyApp({super.key, required this.camera});
 
   @override
   Widget build(BuildContext context) {
@@ -35,7 +34,7 @@ class MyHomePage extends StatefulWidget {
   final String title;
   final CameraDescription camera;
 
-  const MyHomePage({Key? key, required this.title, required this.camera}) : super(key: key);
+  const MyHomePage({super.key, required this.title, required this.camera});
 
   @override
   State<MyHomePage> createState() => _MyHomePageState();
@@ -45,6 +44,7 @@ class _MyHomePageState extends State<MyHomePage> {
   late CameraController _controller;
   late Future<void> _initializeControllerFuture;
   Uint8List? _imageBytes;
+  late Interpreter _interpreter;
 
   // Define your list of bird species
   static const List<String> birdSpecies = [
@@ -65,26 +65,27 @@ class _MyHomePageState extends State<MyHomePage> {
       widget.camera,
       ResolutionPreset.high,
     );
-    _initializeControllerFuture = _controller.initialize();
+    _initializeControllerFuture = _controller.initialize().then((_) {
+      debugPrint("Camera initialized successfully");
+    }).catchError((e) {
+      debugPrint("Error initializing camera: $e");
+    });
     _loadModel();  // Load the model on initialization
   }
 
   @override
   void dispose() {
     _controller.dispose();
-    Tflite.close();  // Close the model when disposing
+    _interpreter.close();  // Close the model when disposing
     super.dispose();
   }
 
   Future<void> _loadModel() async {
     try {
-      await Tflite.loadModel(
-        model: "assets/model.tflite",
-        // No need for labels.txt
-      );
-      debugPrint("Model loaded successfully");
+      _interpreter = await Interpreter.fromAsset('model.tflite');
+      debugPrint('Model loaded successfully');
     } catch (e) {
-      debugPrint("Error loading model: $e");
+      debugPrint('Error loading model: $e');
     }
   }
 
@@ -117,7 +118,7 @@ class _MyHomePageState extends State<MyHomePage> {
       }
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Picture captured')),
+        const SnackBar(content: Text('Picture captured')),
       );
     } catch (e) {
       debugPrint("Error taking picture: $e");
@@ -125,33 +126,54 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Future<List<dynamic>> _runModel(Uint8List imageBytes) async {
-    // Preprocess the image
     try {
-      var processedImage = _preprocessImage(imageBytes);
+      debugPrint("Running the model");
 
-      // Run inference
-      var output = await Tflite.runModelOnBinary(
-        binary: processedImage,
-        numResults: 8,  // Number of classes
-      );
+      // Preprocess the image to get a flat Float32List
+      Float32List input = _preprocessImage(imageBytes);
 
-      return output!;
+      // Reshape the input to [1, 50, 50, 3]
+      List<List<List<List<double>>>> reshapedInput = [
+        List.generate(
+          50,
+              (y) => List.generate(
+            50,
+                (x) => [
+              input[(y * 50 + x) * 3],
+              input[(y * 50 + x) * 3 + 1],
+              input[(y * 50 + x) * 3 + 2],
+            ],
+          ),
+        )
+      ];
+
+      // Convert reshaped input to a Float32List for TensorFlow Lite interpreter
+      List<Float32List> inputList = [Float32List.fromList(reshapedInput.expand((i) => i.expand((j) => j.expand((k) => k))).toList())];
+
+      // Create an output buffer with the number of bird species
+      var output = Float32List(birdSpecies.length);
+
+      // Run the model with the input and output buffers
+      _interpreter.runForMultipleInputs(inputList, {0: output});
+
+      debugPrint("Finished running inference");
+
+      // Convert the output to a more usable format (e.g., List)
+      return output.toList();
     } catch (e) {
       debugPrint("Error at _runModel: $e");
       return [];
     }
-
   }
 
-  Uint8List _preprocessImage(Uint8List imageBytesPreprocess) {
+
+
+  Float32List _preprocessImage(Uint8List imageBytesPreprocess) {
     // Convert Uint8List to Image
     final image = img.decodeImage(imageBytesPreprocess);
 
     // Resize image to match the model input size (e.g., 50x50)
     final resizedImage = img.copyResize(image!, width: 50, height: 50);
-
-    // Convert image to list of bytes
-    final imageBytesFinal = img.encodeJpg(resizedImage);
 
     // Normalize image to 0-1 range and convert to float32
     final buffer = Float32List(50 * 50 * 3);
@@ -168,37 +190,7 @@ class _MyHomePageState extends State<MyHomePage> {
       }
     }
 
-    return Uint8List.fromList(buffer.buffer.asUint8List());
-    // try {
-    //   // Convert Uint8List to Image
-    //   final image = img.decodeImage(imageBytesPreprocess);
-    //
-    //   // Resize image to match the model input size (e.g., 50x50)
-    //   final resizedImage = img.copyResize(image!, width: 50, height: 50);
-    //
-    //   // Convert image to list of bytes
-    //   final imageBytesFinal = img.encodeJpg(resizedImage);
-    //
-    //   // Normalize image to 0-1 range and convert to float32
-    //   final buffer = Float32List(50 * 50 * 3);
-    //   int offset = 0;
-    //   for (var y = 0; y < 50; y++) {
-    //     for (var x = 0; x < 50; x++) {
-    //       final pixel = resizedImage.getPixel(x, y);
-    //       final r = img.getRed(pixel) / 255.0;
-    //       final g = img.getGreen(pixel) / 255.0;
-    //       final b = img.getBlue(pixel) / 255.0;
-    //       buffer[offset++] = r;
-    //       buffer[offset++] = g;
-    //       buffer[offset++] = b;
-    //     }
-    //   }
-    //
-    //   return Uint8List.fromList(buffer.buffer.asUint8List());
-    // } catch (e) {
-    //   debugPrint("Error running _preprocessImage: $e");
-    //   return Uint8List(0);
-    // }
+    return buffer;
   }
 
   @override
@@ -244,6 +236,8 @@ class _MyHomePageState extends State<MyHomePage> {
                   ),
                 ],
               );
+            } else if (snapshot.hasError) {
+              return Text('Error: ${snapshot.error}');
             } else {
               return const Center(child: CircularProgressIndicator());
             }
