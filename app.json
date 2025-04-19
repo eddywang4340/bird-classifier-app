@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "bird-classifier-app",
+    "name": "Bird Classifier",
     "slug": "bird-classifier-app",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -8,14 +8,28 @@
     "scheme": "myapp",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "This app uses the camera to take pictures of birds for classification."
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
-      }
+      },
+      "permissions": [
+        "CAMERA"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -32,7 +46,14 @@
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
         }
-      ]
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "This app uses the camera to take pictures of birds for classification."
+        }
+      ],
+      "expo-asset"
     ],
     "experiments": {
       "typedRoutes": true
