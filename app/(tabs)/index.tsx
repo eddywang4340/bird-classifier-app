@@ -1,64 +1,75 @@
-import React, { useState, useEffect } from 'react';
+import '../utils/tf-register';
+import React, { useState, useEffect, useRef } from 'react';
 import { StyleSheet, View, Text, ActivityIndicator } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import * as tf from '@tensorflow/tfjs';
-import CameraView from '../components/CameraView';
+import CustomCameraView from '../components/CameraView';
 import BirdPrediction from '../components/BirdPrediction';
-import { loadModel, preprocessImage, classifyImage } from '../utils/tensorflowHelper';
+import { 
+  initializeTf, 
+  loadModel, 
+  preprocessImage, 
+  classifyImage, 
+  BirdPredictionResult 
+} from '../utils/tensorflowHelper';
 
-// Define types for our state
-type PredictionResult = {
-  topResult: string;
-  allResults: {
-    species: string;
-    probability: number;
-  }[];
-} | null;
-
-export default function CameraScreen() {
-  // Update state definitions with proper types
-  const [model, setModel] = useState<tf.GraphModel | null>(null);
+export default function HomeScreen() {
+  const [isModelLoading, setIsModelLoading] = useState(true);
   const [imageUri, setImageUri] = useState<string | null>(null);
-  const [predictionResult, setPredictionResult] = useState<PredictionResult>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [isClassifying, setIsClassifying] = useState<boolean>(false);
+  const [predictionResult, setPredictionResult] = useState<BirdPredictionResult | null>(null);
+  const modelRef = useRef<tf.GraphModel | null>(null);
+  const [modelLoadError, setModelLoadError] = useState<string | null>(null);
 
-  // Load model on component mount
+  // Initialize TensorFlow.js and load the model
   useEffect(() => {
-    async function initializeModel() {
+    const setupTensorFlow = async () => {
       try {
+        // Load the model
         const loadedModel = await loadModel();
-        setModel(loadedModel);
+        modelRef.current = loadedModel;
+        setIsModelLoading(false);
       } catch (error) {
-        console.error('Failed to load model:', error);
-      } finally {
-        setIsLoading(false);
+        console.error('Error setting up TensorFlow:', error);
+        setModelLoadError('Failed to load bird classification model. Please check your internet connection.');
+        setIsModelLoading(false);
       }
-    }
+    };
 
-    initializeModel();
+    setupTensorFlow();
+    
+    return () => {
+      if (modelRef.current) {
+        try {
+          modelRef.current.dispose();
+        } catch (e) {
+          console.error('Error disposing model:', e);
+        }
+      }
+    };
   }, []);
 
-  // Handle image capture with type for uri
+  // Handle image capture from camera
   const handleCapture = async (uri: string) => {
     setImageUri(uri);
-    setIsClassifying(true);
+    setPredictionResult({ topResult: 'Analyzing...', allResults: [] });
     
     try {
-      if (!model) {
+      if (!modelRef.current) {
         throw new Error('Model not loaded');
       }
       
-      const processedImage = await preprocessImage(uri);
-      const results = await classifyImage(model, processedImage);
-      setPredictionResult(results);
+      // Preprocess the image
+      const processedImageTensor = await preprocessImage(uri);
+      
+      // Run classification
+      const result = await classifyImage(modelRef.current, processedImageTensor);
+      setPredictionResult(result);
     } catch (error) {
-      console.error('Error during image classification:', error);
-      setPredictionResult({
-        topResult: 'Classification failed',
-        allResults: []
+      console.error('Error during image analysis:', error);
+      setPredictionResult({ 
+        topResult: 'Analysis failed', 
+        allResults: [] 
       });
-    } finally {
-      setIsClassifying(false);
     }
   };
 
@@ -68,38 +79,36 @@ export default function CameraScreen() {
     setPredictionResult(null);
   };
 
-  if (isLoading) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#4CAF50" />
-        <Text style={styles.loadingText}>Loading bird classifier...</Text>
-      </View>
-    );
-  }
-
   return (
-    <View style={styles.container}>
-      <View style={styles.mainContent}>
-        {!imageUri ? (
-          <CameraView onCapture={handleCapture} />
-        ) : (
-          <>
-            {isClassifying ? (
-              <View style={styles.classifyingContainer}>
-                <ActivityIndicator size="large" color="#4CAF50" />
-                <Text style={styles.classifyingText}>Identifying bird...</Text>
-              </View>
-            ) : (
-              <BirdPrediction 
-                imageUri={imageUri} 
-                predictionResult={predictionResult} 
-                onReset={handleReset} 
-              />
-            )}
-          </>
-        )}
+    <SafeAreaView style={styles.container}>
+      <View style={styles.header}>
+        <Text style={styles.title}>Bird Identifier</Text>
       </View>
-    </View>
+
+      {isModelLoading ? (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#4CAF50" />
+          <Text style={styles.loadingText}>Loading bird recognition model...</Text>
+        </View>
+      ) : modelLoadError ? (
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>{modelLoadError}</Text>
+        </View>
+      ) : imageUri ? (
+        <BirdPrediction 
+          imageUri={imageUri} 
+          predictionResult={predictionResult} 
+          onReset={handleReset} 
+        />
+      ) : (
+        <View style={styles.cameraContainer}>
+          <Text style={styles.instructionText}>
+            Take a photo of a bird to identify it
+          </Text>
+          <CustomCameraView onCapture={handleCapture} />
+        </View>
+      )}
+    </SafeAreaView>
   );
 }
 
@@ -108,29 +117,46 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#fff',
   },
-  mainContent: {
-    flex: 1,
-    padding: 15,
+  header: {
+    padding: 16,
+    backgroundColor: '#4CAF50',
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: 'white',
+    textAlign: 'center',
   },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#fff',
+    padding: 20,
   },
   loadingText: {
-    marginTop: 15,
+    marginTop: 20,
     fontSize: 16,
-    color: '#333',
+    textAlign: 'center',
   },
-  classifyingContainer: {
+  errorContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    padding: 20,
   },
-  classifyingText: {
-    marginTop: 15,
+  errorText: {
     fontSize: 16,
-    color: '#333',
+    color: 'red',
+    textAlign: 'center',
+  },
+  cameraContainer: {
+    flex: 1,
+    padding: 16,
+  },
+  instructionText: {
+    fontSize: 16,
+    textAlign: 'center',
+    marginBottom: 16,
+    color: '#555',
   },
 });

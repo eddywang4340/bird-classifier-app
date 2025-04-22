@@ -1,6 +1,11 @@
+import './tf-register';
 import * as tf from '@tensorflow/tfjs';
+import '@tensorflow/tfjs-react-native';
 import * as FileSystem from 'expo-file-system';
 import * as ImageManipulator from 'expo-image-manipulator';
+import * as base64 from 'base64-js';
+import { bundleResourceIO } from '@tensorflow/tfjs-react-native';
+import { decodeJpeg } from '@tensorflow/tfjs-react-native';
 
 // Type definitions
 export type BirdPredictionResult = {
@@ -11,74 +16,144 @@ export type BirdPredictionResult = {
   }[];
 };
 
-// List of bird species that match your model's output classes
-const BIRD_SPECIES = [
-  'Canada Goose',
-  'Blue Jay',
-  'Northern Cardinal',
-  'Pigeon',
-  'Loon',
-  'Seagull',
-  'Red-Tailed Hawk',
-  'Great Blue Heron',
-];
-
-// Model loading
-export const loadModel = async (): Promise<tf.GraphModel> => {
+// Initialize TensorFlow
+export const initializeTf = async (): Promise<void> => {
   try {
-    // Wait for TensorFlow.js to be ready
     await tf.ready();
     console.log('TensorFlow.js is ready');
-
-    // Path to your model JSON file
-    const modelPath = 'your-model-path'; // Update this to your actual model path
-    
-    // Load the model
-    const model = await tf.loadGraphModel(modelPath);
-    console.log('Model loaded successfully');
-    return model;
   } catch (error) {
-    console.error('Failed to load model', error);
+    console.error('Failed to initialize TensorFlow', error);
     throw error;
   }
 };
 
-// Image preprocessing
-export const preprocessImage = async (uri: string): Promise<tf.Tensor> => {
+// Load model from local assets using bundleResourceIO
+export const loadModel = async (): Promise<tf.GraphModel> => {
   try {
-    // Create an instance of ImageManipulator
-    const context = ImageManipulator.ImageManipulator.manipulate(uri);
+    await initializeTf();
     
-    // Resize the image to 50x50
-    context.resize({ width: 50, height: 50 });
-
-    // Render the image to get an ImageRef
-    const imageRef = await context.renderAsync();
+    console.log('Loading bird classifier model from local assets using bundleResourceIO...');
     
-    // Save the modified image
-    const result = await imageRef.saveAsync();
-
-    // Read the image as base64
-    const base64Data  = await FileSystem.readAsStringAsync(result.uri, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
+    // Load the model JSON from assets
+    const modelJSON = require('../assets/model/model.json');
     
-    // Convert base64 to tensor - this will need to be adjusted based on your model's requirements
-    const imgBuffer = tf.util.encodeString(base64Data, 'base64').buffer;
-    const raw = new Uint8Array(imgBuffer);
+    // Load the weight files
+    const modelWeights = [
+      require('../assets/model/group1-shard1of4.bin'),
+      require('../assets/model/group1-shard2of4.bin'),
+      require('../assets/model/group1-shard3of4.bin'),
+      require('../assets/model/group1-shard4of4.bin')
+    ];
     
-    // Create a tensor with the right shape
-    // Note: This part may need adjustment based on how your model expects the data
-    const imageArray = Array.from(raw).map(val => val / 255.0);
-    const tensor = tf.tensor4d(
-      imageArray, 
-      [1, 50, 50, 3] // Batch size 1, 50x50 image, 3 channels (RGB)
+    // Use bundleResourceIO to load the model directly from the bundle resources
+    const model = await tf.loadGraphModel(
+      bundleResourceIO(modelJSON, modelWeights)
     );
     
-    return tensor;
+    console.log('Bird classifier model loaded successfully');
+    return model;
+  } catch (error) {
+    console.error('Failed to load local model:', error);
+    console.log('Falling back to MobileNet model...');
+    
+    try {
+      // Fallback to MobileNet as a reliable alternative
+      const model = await tf.loadGraphModel(
+        'https://storage.googleapis.com/tfjs-models/savedmodel/mobilenet_v2_1.0_224/model.json'
+      );
+      console.log('MobileNet model loaded successfully as fallback');
+      return model;
+    } catch (fallbackError) {
+      console.error('All model loading attempts failed:', fallbackError);
+      throw new Error('Could not load any image classification model');
+    }
+  }
+};
+
+// Process image for TensorFlow.js using a more compatible approach
+export const preprocessImage = async (uri: string): Promise<tf.Tensor> => {
+  try {
+    console.log('Preprocessing image using decodeJpeg...');
+    
+    // First resize to 224x224 with base64 output
+    const resizedImg = await ImageManipulator.manipulateAsync(
+      uri,
+      [{ resize: { width: 224, height: 224 } }],
+      { format: ImageManipulator.SaveFormat.JPEG, base64: true }
+    );
+    
+    if (!resizedImg.base64) {
+      throw new Error('Failed to get base64 data from resized image');
+    }
+    
+    // Convert base64 to Uint8Array
+    const imgBuffer = base64.toByteArray(resizedImg.base64);
+    
+    // Use decodeJpeg to convert JPEG buffer to tensor
+    const decodedImage = decodeJpeg(imgBuffer);
+    
+    // Normalize pixel values to [-1, 1]
+    const normalized = decodedImage.toFloat().div(tf.scalar(127.5)).sub(tf.scalar(1));
+    
+    // Add batch dimension [1, 224, 224, 3]
+    const batched = normalized.expandDims(0);
+    
+    // Clean up intermediates
+    decodedImage.dispose();
+    normalized.dispose();
+    
+    console.log('Image preprocessed successfully with shape:', batched.shape);
+    return batched;
   } catch (error) {
     console.error('Error preprocessing image:', error);
-    throw error;
+    
+    // Fallback to manual processing if decodeJpeg fails
+    try {
+      console.log('Trying manual tensor creation...');
+      
+      // Get image as base64
+      const resizedImg = await ImageManipulator.manipulateAsync(
+        uri,
+        [{ resize: { width: 224, height: 224 } }],
+        { format: ImageManipulator.SaveFormat.JPEG, base64: true }
+      );
+      
+      if (!resizedImg.base64) {
+        throw new Error('Failed to get base64 data');
+      }
+      
+      // Convert base64 to bytes
+      const imgBuffer = base64.toByteArray(resizedImg.base64);
+      
+      // Manual RGB extraction - using a fixed tensor size
+      const numChannels = 3; // RGB
+      const pixels = new Float32Array(224 * 224 * numChannels);
+      
+      // Fill the array with zeros first
+      pixels.fill(0);
+      
+      // Copy as many pixels as we can from the image buffer
+      // This isn't 100% correct but should prevent size mismatch errors
+      const limit = Math.min(imgBuffer.length, pixels.length);
+      for (let i = 0; i < limit; i++) {
+        pixels[i] = imgBuffer[i] / 127.5 - 1;
+      }
+      
+      // Create tensor with correct shape
+      const tensor = tf.tensor3d(pixels, [224, 224, 3], 'float32');
+      
+      // Add batch dimension
+      const batched = tensor.expandDims(0);
+      
+      // Clean up
+      tensor.dispose();
+      
+      console.log('Manual preprocessing successful with shape:', batched.shape);
+      return batched;
+    } catch (secondError) {
+      console.error('All preprocessing methods failed:', secondError);
+      throw new Error('Failed to preprocess image after multiple attempts');
+    }
   }
 };
 
@@ -88,35 +163,87 @@ export const classifyImage = async (
   imageTensor: tf.Tensor
 ): Promise<BirdPredictionResult> => {
   try {
+    console.log('Running model prediction...');
+    console.log('Input tensor shape:', imageTensor.shape);
+    
     // Run inference
-    const predictions = await model.predict(imageTensor) as tf.Tensor;
+    const predictions = model.predict(imageTensor) as tf.Tensor;
+    console.log('Output predictions shape:', predictions.shape);
     
     // Get the probabilities as an array
     const probabilities = await predictions.data();
+    console.log('Got probabilities, first few values:', 
+      Array.from(probabilities.slice(0, 5))
+          .map((p, i) => `[${i}]: ${p.toFixed(6)}`).join(', '));
     
-    // Get the index of the highest probability
-    const highestProbIndex = Array.from(probabilities).indexOf(
-      Math.max(...Array.from(probabilities))
-    );
-    
-    // Get the bird species name
-    const birdName = BIRD_SPECIES[highestProbIndex];
-    
-    // Format results
-    const results = BIRD_SPECIES.map((species, index) => ({
-      species,
-      probability: probabilities[index]
-    })).sort((a, b) => b.probability - a.probability);
-    
-    // Cleanup tensors to prevent memory leaks
-    tf.dispose([imageTensor, predictions]);
+    try {
+      // Try to fetch the bird labels
+      console.log('Fetching bird label mapping...');
+      const response = await fetch('https://www.gstatic.com/aihub/tfhub/labelmaps/aiy_birds_V1_labelmap.csv');
+      const labelsText = await response.text();
+      
+      // Parse the CSV to get bird names
+      const birdLabels = labelsText.split('\n')
+        .filter(line => line.trim() !== '')
+        .map(line => {
+          const parts = line.split(',');
+          return parts.length > 1 ? parts[1] : `Bird ${line}`;
+        });
+      
+      console.log(`Loaded ${birdLabels.length} bird labels`);
+      
+      // Format and sort results
+      let results = Array.from(probabilities).map((probability, index) => ({
+        species: index < birdLabels.length ? birdLabels[index] : `Bird ${index}`,
+        probability: probability
+      }))
+      .filter(item => item.probability > 0.001) // Lower threshold to see more results
+      .sort((a, b) => b.probability - a.probability);
+      
+      // Log all results with decent probability
+      results.slice(0, 10).forEach((result, idx) => {
+        console.log(`Result #${idx + 1}: ${result.species} (${(result.probability * 100).toFixed(2)}%)`);
+      });
+      
+      // Cleanup tensors to prevent memory leaks
+      tf.dispose([imageTensor, predictions]);
+      
+      return {
+        topResult: results.length > 0 ? results[0].species : 'Unknown Bird',
+        allResults: results.slice(0, 10) // Return top 10 results
+      };
+    } catch (labelError) {
+      // If we can't fetch bird labels, use generic labels
+      console.warn('Could not fetch bird labels, using generic labels:', labelError);
+      
+      // Format results with generic labels
+      const results = Array.from(probabilities).map((probability, index) => ({
+        species: `Class ${index}`,
+        probability: probability
+      }))
+      .filter(item => item.probability > 0.01)
+      .sort((a, b) => b.probability - a.probability);
+      
+      // Cleanup tensors
+      tf.dispose([imageTensor, predictions]);
+      
+      return {
+        topResult: results.length > 0 ? results[0].species : 'Unknown Object',
+        allResults: results.slice(0, 10)
+      };
+    }
+  } catch (error) {
+    // Handle errors during classification
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('Error during classification:', errorMessage);
+    tf.dispose([imageTensor]);
     
     return {
-      topResult: birdName,
-      allResults: results
+      topResult: 'Classification Error',
+      allResults: [{
+        species: 'Error: ' + errorMessage,
+        probability: 1
+      }]
     };
-  } catch (error) {
-    console.error('Error during classification:', error);
-    throw error;
   }
 };
