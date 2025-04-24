@@ -58,11 +58,9 @@ export default function HomeScreen() {
         throw new Error('Model not loaded');
       }
       
-      // Preprocess the image
-      const processedImageTensor = await preprocessImage(uri);
-      
-      // Run classification
-      const result = await classifyImage(modelRef.current, processedImageTensor);
+      // Pass the URI directly to classifyImage
+      // The updated tensorflowHelper now expects the original URI as the third parameter
+      const result = await classifyImage(modelRef.current, null, uri);
       setPredictionResult(result);
     } catch (error) {
       console.error('Error during image analysis:', error);
